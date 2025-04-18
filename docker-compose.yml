@@ -1,0 +1,112 @@
+version: '2.4'
+services:
+  mongo0:
+    hostname: mongo0
+    container_name: mongo0
+    image: mongo
+    ports:
+      - 27017:27017
+    restart: on-failure
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "rs0" ]
+    healthcheck:
+      test: mongo --eval "printjson(rs.isMaster())" | grep ismaster | grep true
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  mongo1:
+    hostname: mongo1
+    container_name: mongo1
+    image: mongo
+    ports:
+      - 27018:27017
+    restart: on-failure
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "rs0" ]
+
+  mongo2:
+    hostname: mongo2
+    container_name: mongo2
+    image: mongo
+    ports:
+      - 27019:27017
+    restart: on-failure
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--replSet", "rs0" ]
+
+  cluster-setup:
+    hostname: cluster-setup
+    container_name: cluster-setup
+    image: mongo
+    restart: "no"
+    depends_on:
+      - mongo0
+      - mongo1
+      - mongo2
+    volumes:
+      - .:/scripts
+    entrypoint: [ "bash", "/scripts/mongo-setup.sh" ]
+
+  elasticsearch:
+    hostname: elasticsearch
+    container_name: elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.5.1
+    environment:
+      - discovery.type=single-node
+    ports:
+      - 9200:9200
+      - 9300:9300
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9200']
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  kibana:
+    hostname: kibana
+    container_name: kibana
+    image: docker.elastic.co/kibana/kibana:6.5.1
+    ports:
+      - 5601:5601
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5601']
+      interval: 20s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  apm-server:
+    hostname: apm-server
+    container_name: apm-server
+    image: playdingnow/elastic-apm-server:1.6.0
+    ports:
+      - 8200:8200
+    healthcheck:
+      test: printf "GET / HTTP/1.1\n\n" > /dev/tcp/127.0.0.1/8200
+      interval: 20s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      kibana:
+        condition: service_healthy
+
+  demo-service:
+    build: .
+    restart: on-failure
+    ports:
+      - 8080:8080
+    environment:
+      - SPRING_ELASTICSEARCH_REST_URIS=http://elasticsearch:9200
+      - SPRING_DATA_ELASTICSEARCH_CLUSTER_NAME=docker-cluster
+      - SPRING_DATA_ELASTICSEARCH_CLUSTER_NODES=elasticsearch:9300
+      - SPRING_DATA_MONGODB_DATABASE=demo
+      - SPRING_DATA_MONGODB_URI=mongodb://mongo0:27017,mongo1:27017,mongo2:27017/?replicaSet=rs0
+      - ELASTIC_APM_SERVICE_NAME=demo-service
+      - ELASTIC_APM_APPLICATION_PACKAGES=io.github.cepr0.demo
+      - ELASTIC_APM_SERVER_URL=http://localhost:8200
+      - ELASTIC_APM_SECRET_TOKEN=xxVpmQB2HMzCL9PgBHVrnxjNXXw5J7bd79DFm6sjBJR5HPXDhcF8MSb3vv4bpg44
+    depends_on:
+      mongo0:
+        condition: service_healthy
+      apm-server:
+        condition: service_healthy
